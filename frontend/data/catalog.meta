@@ -1,0 +1,10 @@
+TABLE ramu
+COLUMN id INT 0
+COLUMN name TEXT 0
+COLUMN age INT 0
+
+TABLE employees
+COLUMN id INT 1
+COLUMN name TEXT 0
+COLUMN age INT 0
+

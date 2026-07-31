@@ -1,0 +1,5 @@
+TABLE employees
+COLUMN id INT 1
+COLUMN name TEXT 0
+COLUMN age INT 0
+

@@ -1,0 +1,3 @@
+C:/ramu/project/New_ Mini_DB/build/CMakeFiles/dbforge.dir
+C:/ramu/project/New_ Mini_DB/build/CMakeFiles/edit_cache.dir
+C:/ramu/project/New_ Mini_DB/build/CMakeFiles/rebuild_cache.dir
