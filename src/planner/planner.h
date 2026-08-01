@@ -8,16 +8,20 @@
 #include <memory>
 #include <sstream>
 
+/**
+ * @brief Physical execution operator types.
+ */
 enum class PlanType {
-    SEQ_SCAN,
-    INDEX_SCAN,
-    FILTER,
-    PROJECT,
-    NESTED_LOOP_JOIN,
-    SORT,
-    LIMIT
+    SEQ_SCAN,          // Linear file scan
+    INDEX_SCAN,        // Logarithmic B+ Tree lookup scan
+    FILTER,            // Evaluates filtering conditions
+    PROJECT,           // Restricts output column projections
+    NESTED_LOOP_JOIN,  // Relational inner join logic
+    SORT,              // Memory-based query sorting
+    LIMIT              // Restricts output row counts
 };
 
+// Converts plan type enum to human-readable strings
 inline std::string PlanTypeToString(PlanType type) {
     switch (type) {
         case PlanType::SEQ_SCAN: return "SeqScan";
@@ -31,46 +35,65 @@ inline std::string PlanTypeToString(PlanType type) {
     return "Unknown";
 }
 
+/**
+ * @brief Represents a single physical node inside the compiled Query Execution Plan tree.
+ */
 struct PlanNode {
-    PlanType type;
-    std::string detail;
-    std::vector<std::string> output_columns;
-    std::shared_ptr<PlanNode> left;
-    std::shared_ptr<PlanNode> right;
+    PlanType type;                            // Type of this physical plan step
+    std::string detail;                       // Human-readable operational description
+    std::vector<std::string> output_columns;  // Columns returned by this step
+    std::shared_ptr<PlanNode> left;           // Left child step (nested input source)
+    std::shared_ptr<PlanNode> right;          // Right child step (nested input source)
     
-    // For specific execution details
-    std::string table_name;
-    std::string index_col;
-    std::string index_val;
-    WhereCondition filter_cond;
-    std::string join_left_col;
-    std::string join_right_col;
-    std::string sort_col;
-    bool sort_asc = true;
-    int limit_count = -1;
+    // Node-specific execution configuration parameters
+    std::string table_name;       // SeqScan or IndexScan target table
+    std::string index_col;        // IndexScan column key
+    std::string index_val;        // IndexScan key value to lookup
+    WhereCondition filter_cond;   // Filter step evaluation condition
+    std::string join_left_col;    // Inner Join matching column (left side)
+    std::string join_right_col;   // Inner Join matching column (right side)
+    std::string sort_col;         // Sort column target
+    bool sort_asc = true;         // Sort direction: true for ASC, false for DESC
+    int limit_count = -1;         // Limit row count threshold
 };
 
+/**
+ * @brief Planner translates a parsed SELECT AST query node into a tree of physical execution operators.
+ * It implements a Rule-Based Optimizer (RBO) that optimizes filters into logarithmic index lookups.
+ */
 class Planner {
 private:
-    const Catalog& catalog_;
+    const Catalog& catalog_; // Reference to the system catalog to fetch indexing status
     
 public:
+    /**
+     * @brief Construct a new Planner object.
+     */
     Planner(const Catalog& catalog) : catalog_(catalog) {}
     
+    /**
+     * @brief Translates SELECT AST commands to a physical execution plan tree.
+     * 
+     * Optimization Rule: If the query filters on a column with a B+ Tree index using
+     * equality (`=`), the planner automatically replaces the SeqScan node with an IndexScan node.
+     * 
+     * @param select The SelectNode AST statement to compile.
+     * @return std::shared_ptr<PlanNode> Root node of the compiled physical execution plan.
+     */
     std::shared_ptr<PlanNode> GeneratePlan(const SelectNode& select) {
-        // Base: Main table scan
+        // Base Operator: Default to a linear table Sequential Scan
         std::shared_ptr<PlanNode> plan = std::make_shared<PlanNode>();
         plan->type = PlanType::SEQ_SCAN;
         plan->table_name = select.table_name;
         plan->detail = "Table: " + select.table_name;
         
-        // Populate base table output columns
+        // Populate base table output columns from Catalog schema
         const auto& schema = catalog_.GetSchema(select.table_name);
         for (const auto& col : schema.columns) {
             plan->output_columns.push_back(col.name);
         }
         
-        // Handle Join
+        // Handle Join clauses: Wrap standard scans inside a Nested Loop Join node
         if (select.join.has_join) {
             std::shared_ptr<PlanNode> right_scan = std::make_shared<PlanNode>();
             right_scan->type = PlanType::SEQ_SCAN;
@@ -90,7 +113,7 @@ public:
             join_node->join_right_col = select.join.right_col;
             join_node->detail = "Condition: " + select.join.left_col + " = " + select.join.right_col;
             
-            // Output of Join is union of both
+            // Join output attributes are the union of columns of both tables
             join_node->output_columns = plan->output_columns;
             join_node->output_columns.insert(join_node->output_columns.end(), 
                                              right_scan->output_columns.begin(), 
@@ -98,16 +121,14 @@ public:
             plan = join_node;
         }
         
-        // Handle Filter (WHERE clause) & Optimize with B+ Tree Index
+        // Handle Filtering (WHERE clause) and Index Optimization rules
         if (select.where.is_valid) {
             bool use_index = false;
             std::string indexed_table = "";
             std::string indexed_col = "";
             
-            // Optimization Check: Can we use an index?
-            // If operator is EQUAL, check if the columns have an index.
+            // Optimizer check: Can we run a logarithmic index search?
             if (select.where.op == TokenType::EQUAL) {
-                // If it's a simple query (no join), check main table
                 if (!select.join.has_join) {
                     if (catalog_.HasIndex(select.table_name, select.where.col_name)) {
                         use_index = true;
@@ -115,14 +136,12 @@ public:
                         indexed_col = select.where.col_name;
                     }
                 } else {
-                    // With a join, index can be used on the filter column if it belongs to one of the tables
-                    // Check main table
+                    // Joins index checks
                     if (catalog_.HasIndex(select.table_name, select.where.col_name)) {
                         use_index = true;
                         indexed_table = select.table_name;
                         indexed_col = select.where.col_name;
                     }
-                    // Check join table
                     else if (catalog_.HasIndex(select.join.table_name, select.where.col_name)) {
                         use_index = true;
                         indexed_table = select.join.table_name;
@@ -132,8 +151,7 @@ public:
             }
             
             if (use_index) {
-                // Optimizer optimization: replace SeqScan with IndexScan
-                // Let's find where the SeqScan is in our tree and replace it.
+                // Rule matched! Replace SeqScan with IndexScan in the execution tree.
                 if (plan->type == PlanType::SEQ_SCAN && plan->table_name == indexed_table) {
                     plan->type = PlanType::INDEX_SCAN;
                     plan->index_col = indexed_col;
@@ -151,14 +169,14 @@ public:
                         plan->right->index_val = select.where.value;
                         plan->right->detail = "Index: " + indexed_col + " = " + select.where.value;
                     } else {
-                        // Standard filter fallback
+                        // Fallback: Default filter operator
                         std::shared_ptr<PlanNode> filter_node = std::make_shared<PlanNode>();
                         filter_node->type = PlanType::FILTER;
                         filter_node->left = plan;
                         filter_node->filter_cond = select.where;
                         filter_node->output_columns = plan->output_columns;
                         
-                        std::string op_str = "="; // Default
+                        std::string op_str = "=";
                         if (select.where.op == TokenType::GREATER) op_str = ">";
                         if (select.where.op == TokenType::LESS) op_str = "<";
                         if (select.where.op == TokenType::GREATER_EQUAL) op_str = ">=";
@@ -170,7 +188,7 @@ public:
                     }
                 }
             } else {
-                // Standard Filter node
+                // Default non-indexed Filter operator mapping
                 std::shared_ptr<PlanNode> filter_node = std::make_shared<PlanNode>();
                 filter_node->type = PlanType::FILTER;
                 filter_node->left = plan;
@@ -189,7 +207,7 @@ public:
             }
         }
         
-        // Handle Sort (ORDER BY)
+        // Handle Sorting (ORDER BY)
         if (select.order_by.has_order_by) {
             std::shared_ptr<PlanNode> sort_node = std::make_shared<PlanNode>();
             sort_node->type = PlanType::SORT;
@@ -201,7 +219,7 @@ public:
             plan = sort_node;
         }
         
-        // Handle Limit
+        // Handle Limit operators
         if (select.limit.has_limit) {
             std::shared_ptr<PlanNode> limit_node = std::make_shared<PlanNode>();
             limit_node->type = PlanType::LIMIT;
@@ -212,7 +230,7 @@ public:
             plan = limit_node;
         }
         
-        // Handle Projection (Project columns select list)
+        // Handle Column Projections (SELECT column lists)
         std::shared_ptr<PlanNode> project_node = std::make_shared<PlanNode>();
         project_node->type = PlanType::PROJECT;
         project_node->left = plan;
@@ -234,7 +252,11 @@ public:
         return plan;
     }
     
-    // Prints the plan node to a JSON structure for Next.js to render
+    /**
+     * @brief Serializes the physical plan tree into a JSON structure for the frontend UI.
+     * @param node The root plan node.
+     * @return std::string Formatted JSON string.
+     */
     std::string SerializePlanTree(std::shared_ptr<PlanNode> node) {
         if (!node) return "null";
         

@@ -19,7 +19,7 @@ Catalog::Catalog(const std::string& meta_path) : meta_path_(meta_path) {}
 bool Catalog::Load() {
     std::ifstream file(meta_path_);
     if (!file.is_open()) {
-        // If file doesn't exist, it's fine, we start fresh.
+        // Meta file not found; start with a clean in-memory state.
         return true;
     }
     
@@ -28,6 +28,7 @@ bool Catalog::Load() {
     std::string current_table = "";
     std::vector<Column> current_columns;
     
+    // Parse metadata file line-by-line
     while (std::getline(file, line)) {
         if (line.empty()) continue;
         std::stringstream ss(line);
@@ -35,6 +36,7 @@ bool Catalog::Load() {
         ss >> tag;
         
         if (tag == "TABLE") {
+            // Save the previously parsed table schema
             if (!current_table.empty()) {
                 tables_[current_table] = Schema{current_columns};
                 current_columns.clear();
@@ -48,6 +50,7 @@ bool Catalog::Load() {
             current_columns.push_back(Column{col_name, type, has_idx == 1});
         }
     }
+    // Save the final parsed table schema
     if (!current_table.empty()) {
         tables_[current_table] = Schema{current_columns};
     }
@@ -61,6 +64,7 @@ bool Catalog::Save() {
         std::cerr << "Failed to open catalog file for writing: " << meta_path_ << std::endl;
         return false;
     }
+    // Serialize each table configuration sequentially
     for (const auto& pair : tables_) {
         file << "TABLE " << pair.first << "\n";
         for (const auto& col : pair.second.columns) {
@@ -97,10 +101,11 @@ bool Catalog::CreateIndex(const std::string& table_name, const std::string& col_
     auto it = tables_.find(table_name);
     if (it == tables_.end()) return false;
     
+    // Find target column and toggle its has_index flag
     for (auto& col : it->second.columns) {
         if (col.name == col_name) {
             col.has_index = true;
-            return Save();
+            return Save(); // Persist catalog update
         }
     }
     return false;

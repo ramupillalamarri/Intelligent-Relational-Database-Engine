@@ -7,6 +7,17 @@
 #include <cstring>
 #include <stdexcept>
 
+/**
+ * @brief Serializes a vector of string values into a compact raw binary byte buffer.
+ * 
+ * Formatting:
+ * - `INT` Type: Serialized as a raw 4-byte block.
+ * - `TEXT` Type: Serialized as a 2-byte length prefix (uint16_t) followed by the raw characters.
+ * 
+ * @param schema The table column structure schema.
+ * @param row_vals Vector of string values corresponding to the row attributes.
+ * @return std::vector<char> Binary byte buffer containing the serialized row.
+ */
 inline std::vector<char> SerializeRow(const Schema& schema, const std::vector<std::string>& row_vals) {
     std::vector<char> buffer;
     
@@ -39,9 +50,17 @@ inline std::vector<char> SerializeRow(const Schema& schema, const std::vector<st
     return buffer;
 }
 
+/**
+ * @brief Deserializes a binary byte buffer back into a vector of human-readable strings.
+ * Reads the schema definition to know how many bytes to read and parse for each attribute.
+ * 
+ * @param schema The table column structure schema.
+ * @param data The raw binary record payload read from a page.
+ * @return std::vector<std::string> Deserialized row values.
+ */
 inline std::vector<std::string> DeserializeRow(const Schema& schema, const std::vector<char>& data) {
     std::vector<std::string> row_vals;
-    size_t offset = 0;
+    size_t offset = 0; // Running byte offset pointer
     
     for (const auto& col : schema.columns) {
         if (offset > data.size()) {

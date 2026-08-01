@@ -8,35 +8,59 @@
 #include <stdexcept>
 #include <iostream>
 
+/**
+ * @brief Parser translates a stream of tokens into an Abstract Syntax Tree (AST).
+ * 
+ * It is implemented as a **Recursive Descent Parser**, where each SQL grammar rule
+ * corresponds to a specific parsing method.
+ */
 class Parser {
 private:
-    std::vector<Token> tokens_;
-    size_t pos_ = 0;
+    std::vector<Token> tokens_; // List of tokens produced by the Lexer
+    size_t pos_ = 0;            // Current token index pointer
     
+    /**
+     * @brief Peeks at the current token without consuming it.
+     */
     const Token& Peek() const {
         if (pos_ >= tokens_.size()) return tokens_.back();
         return tokens_[pos_];
     }
     
+    /**
+     * @brief Returns the token immediately preceding the current parser position.
+     */
     const Token& Previous() const {
         if (pos_ == 0) return tokens_[0];
         return tokens_[pos_ - 1];
     }
     
+    /**
+     * @brief Checks if the current token is END_OF_FILE.
+     */
     bool IsAtEnd() const {
         return Peek().type == TokenType::END_OF_FILE;
     }
     
+    /**
+     * @brief Consumes and returns the current token, moving the parser pointer forward.
+     */
     Token Advance() {
         if (!IsAtEnd()) pos_++;
         return Previous();
     }
     
+    /**
+     * @brief Checks if the current token matches the specified type.
+     */
     bool Check(TokenType type) const {
         if (IsAtEnd()) return false;
         return Peek().type == type;
     }
     
+    /**
+     * @brief If the current token matches the type, consumes it and returns true.
+     */
     bool Match(TokenType type) {
         if (Check(type)) {
             Advance();
@@ -45,14 +69,27 @@ private:
         return false;
     }
     
+    /**
+     * @brief Asserts that the current token matches the type, advances the cursor,
+     * or throws a syntax parse error with the given message.
+     */
     Token Consume(TokenType type, const std::string& message) {
         if (Check(type)) return Advance();
         throw std::runtime_error("Parser Error: " + message + " at token '" + Peek().text + "'");
     }
     
 public:
+    /**
+     * @brief Construct a new Parser object.
+     * @param tokens The vector of tokens to parse.
+     */
     Parser(const std::vector<Token>& tokens) : tokens_(tokens) {}
     
+    /**
+     * @brief Begins statement compilation and builds the AST.
+     * Parses optional trailing semicolons and catches syntax exceptions.
+     * @return std::unique_ptr<ASTNode> The root node of the AST, or nullptr if syntax error.
+     */
     std::unique_ptr<ASTNode> Parse() {
         try {
             std::unique_ptr<ASTNode> stmt = ParseStatement();
@@ -67,6 +104,9 @@ public:
     }
     
 private:
+    /**
+     * @brief Routes parsing based on the initial statement keyword.
+     */
     std::unique_ptr<ASTNode> ParseStatement() {
         if (Match(TokenType::CREATE)) {
             return ParseCreate();
@@ -86,6 +126,9 @@ private:
         throw std::runtime_error("Unsupported statement starting with: " + Peek().text);
     }
     
+    /**
+     * @brief Parses CREATE TABLE or CREATE INDEX statements.
+     */
     std::unique_ptr<ASTNode> ParseCreate() {
         if (Match(TokenType::TABLE)) {
             auto node = std::make_unique<CreateNode>();
@@ -110,7 +153,7 @@ private:
             Consume(TokenType::RPAREN, "Expect ')' after column definitions");
             return node;
         } else if (Match(TokenType::INDEX)) {
-            // CREATE INDEX ON table_name (col_name)
+            // Format: CREATE INDEX ON table_name (col_name)
             auto node = std::make_unique<CreateIndexNode>();
             Consume(TokenType::ON, "Expect 'ON' after CREATE INDEX");
             Token table_token = Consume(TokenType::IDENTIFIER, "Expect table name");
@@ -126,6 +169,9 @@ private:
         throw std::runtime_error("Expect 'TABLE' or 'INDEX' after 'CREATE'");
     }
     
+    /**
+     * @brief Parses INSERT INTO table VALUES (val1, val2, ...) statements.
+     */
     std::unique_ptr<ASTNode> ParseInsert() {
         Consume(TokenType::INTO, "Expect 'INTO' after 'INSERT'");
         auto node = std::make_unique<InsertNode>();
@@ -149,10 +195,13 @@ private:
         return node;
     }
     
+    /**
+     * @brief Parses SELECT projection FROM table [JOIN...] [WHERE...] [ORDER BY...] [LIMIT...] statements.
+     */
     std::unique_ptr<ASTNode> ParseSelect() {
         auto node = std::make_unique<SelectNode>();
         
-        // Parse Columns
+        // Parse projected columns list (or wildcard '*')
         if (Match(TokenType::STAR)) {
             node->columns.push_back("*");
         } else {
@@ -166,7 +215,7 @@ private:
         Token table_token = Consume(TokenType::IDENTIFIER, "Expect table name");
         node->table_name = table_token.text;
         
-        // Parse JOIN (optional, e.g. JOIN table2 ON table1.col1 = table2.col2)
+        // Parse optional JOIN clause (e.g. JOIN departments ON employees.id = departments.emp_id)
         if (Match(TokenType::JOIN)) {
             node->join.has_join = true;
             Token join_table = Consume(TokenType::IDENTIFIER, "Expect join table name");
@@ -181,13 +230,13 @@ private:
             node->join.right_col = right_col.text;
         }
         
-        // Parse WHERE (optional, e.g. WHERE age > 20)
+        // Parse optional WHERE condition (e.g. WHERE age >= 18)
         if (Match(TokenType::WHERE)) {
             node->where.is_valid = true;
             Token col_token = Consume(TokenType::IDENTIFIER, "Expect column name in WHERE");
             node->where.col_name = col_token.text;
             
-            Token op_token = Advance(); // Operator token
+            Token op_token = Advance(); // Read comparison operator
             if (op_token.type != TokenType::EQUAL &&
                 op_token.type != TokenType::GREATER &&
                 op_token.type != TokenType::LESS &&
@@ -207,7 +256,7 @@ private:
             }
         }
         
-        // Parse ORDER BY (optional)
+        // Parse optional ORDER BY clause (e.g. ORDER BY id DESC)
         if (Match(TokenType::ORDER)) {
             Consume(TokenType::BY, "Expect 'BY' after 'ORDER'");
             node->order_by.has_order_by = true;
@@ -219,11 +268,11 @@ private:
             } else if (Match(TokenType::DESC)) {
                 node->order_by.asc = false;
             } else {
-                node->order_by.asc = true; // Default
+                node->order_by.asc = true; // ASC is default
             }
         }
         
-        // Parse LIMIT (optional)
+        // Parse optional LIMIT clause (e.g. LIMIT 5)
         if (Match(TokenType::LIMIT)) {
             node->limit.has_limit = true;
             Token limit_token = Consume(TokenType::NUMBER, "Expect numeric limit value");
@@ -233,6 +282,9 @@ private:
         return node;
     }
     
+    /**
+     * @brief Parses UPDATE table SET col = val WHERE condition statements.
+     */
     std::unique_ptr<ASTNode> ParseUpdate() {
         auto node = std::make_unique<UpdateNode>();
         Token table_token = Consume(TokenType::IDENTIFIER, "Expect table name to update");
@@ -252,7 +304,7 @@ private:
             throw std::runtime_error("Expect literal value in SET clause");
         }
         
-        // Update must have WHERE clause for safety/filtering
+        // Safety restriction: UPDATE queries must enforce a WHERE clause to avoid mass corruption
         Consume(TokenType::WHERE, "Expect 'WHERE' clause for UPDATE statement");
         node->where.is_valid = true;
         Token where_col = Consume(TokenType::IDENTIFIER, "Expect column name in WHERE");
@@ -272,13 +324,16 @@ private:
         return node;
     }
     
+    /**
+     * @brief Parses DELETE FROM table WHERE condition statements.
+     */
     std::unique_ptr<ASTNode> ParseDelete() {
         Consume(TokenType::FROM, "Expect 'FROM' after 'DELETE'");
         auto node = std::make_unique<DeleteNode>();
         Token table_token = Consume(TokenType::IDENTIFIER, "Expect table name");
         node->table_name = table_token.text;
         
-        // Delete must have WHERE clause
+        // Safety restriction: DELETE queries must enforce a WHERE clause to avoid clearing all rows
         Consume(TokenType::WHERE, "Expect 'WHERE' clause for DELETE statement");
         node->where.is_valid = true;
         Token where_col = Consume(TokenType::IDENTIFIER, "Expect column name in WHERE");
